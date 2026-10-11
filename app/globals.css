@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f7f9;
+  --surface: #ffffff;
+  --foreground: #14171f;
+  --muted: #677084;
+  --border: #e3e6ec;
+  --accent: #0f8a5f;
+  --accent-soft: #e2f4ec;
+  --expense: #c2410c;
+  --income: #0f8a5f;
+  /* séries dos gráficos (validadas p/ daltonismo) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --grid: #eceef2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0e1116;
+    --surface: #171b22;
+    --foreground: #e8ebf1;
+    --muted: #8b93a5;
+    --border: #262c36;
+    --accent: #34c38f;
+    --accent-soft: #15302a;
+    --expense: #fb8c5a;
+    --income: #34c38f;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --grid: #222831;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-expense: var(--expense);
+  --color-income: var(--income);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
