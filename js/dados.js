@@ -34,6 +34,16 @@ function addMesesData(data, n) {
   const ultimo = new Date(y, m, 0).getDate();
   return `${mes}-${String(Math.min(Number(data.slice(8, 10)), ultimo)).padStart(2, '0')}`;
 }
+/** Data de vencimento da fatura em que cai uma compra no cartão.
+ *  Compras a partir do dia de fechamento vão para a fatura seguinte. */
+function vencimentoFatura(dataCompra, fechamento, vencimento) {
+  const mes = dataCompra.slice(0, 7);
+  const [y, m] = mes.split('-').map(Number);
+  const fech = Math.min(fechamento, new Date(y, m, 0).getDate());
+  const mesFech = Number(dataCompra.slice(8, 10)) >= fech ? addMeses(mes, 1) : mes;
+  const mesVenc = vencimento > fechamento ? mesFech : addMeses(mesFech, 1);
+  return addMesesData(`${mesVenc}-${String(vencimento).padStart(2, '0')}`, 0);
+}
 /** Divide um total em n parcelas em centavos; a diferença do arredondamento vai na 1ª. */
 function dividirParcelas(total, n) {
   const centavos = Math.round(total * 100), base = Math.floor(centavos / n);
@@ -48,7 +58,7 @@ function difMeses(de, ate) {
 
 function estadoInicial() {
   return {
-    config: { familia: '', pessoas: [], configurado: false },
+    config: { familia: '', pessoas: [], configurado: false, cartao: { fechamento: null, vencimento: null } },
     categorias: [
       ...CATEGORIAS_PADRAO.despesa.map(nome => ({ id: uid(), nome, tipo: 'despesa' })),
       ...CATEGORIAS_PADRAO.receita.map(nome => ({ id: uid(), nome, tipo: 'receita' }))
@@ -78,6 +88,7 @@ function normalizar(d) {
     if (!Array.isArray(d[k])) d[k] = base[k];
   }
   d.config = { ...base.config, ...d.config };
+  d.config.cartao = { ...base.config.cartao, ...d.config.cartao };
   d.meta = { ...base.meta, ...d.meta };
   return d;
 }
@@ -189,4 +200,4 @@ function serieReal(ids, movimentos, saldos, deMes, ateMes) {
   return out;
 }
 
-if (typeof module !== 'undefined') module.exports = { addMeses, addMesesData, dividirParcelas, difMeses, lerValor, projetar, taxaAnual, serieReal, resumoMes, normalizar };
+if (typeof module !== 'undefined') module.exports = { addMeses, addMesesData, vencimentoFatura, dividirParcelas, difMeses, lerValor, projetar, taxaAnual, serieReal, resumoMes, normalizar };

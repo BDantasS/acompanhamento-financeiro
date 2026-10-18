@@ -69,7 +69,8 @@ const temPessoas = () => DB.config.pessoas.length > 1;
 
 function itemLancamento(l) {
   const cat = nomeCategoria(l.categoriaId);
-  const detalhes = [l.descricao ? cat || 'Sem categoria' : '', l.pagamento, temPessoas() ? l.pessoa : ''].filter(Boolean);
+  const detalhes = [l.descricao ? cat || 'Sem categoria' : '', l.pagamento,
+    l.dataCompra ? 'compra em ' + fmtData(l.dataCompra).slice(0, 5) : '', temPessoas() ? l.pessoa : ''].filter(Boolean);
   const sinal = l.tipo === 'receita' ? '+' : '−';
   return `<button class="lista-item" data-lanc="${l.id}">
     <div class="info">
@@ -183,7 +184,7 @@ function formLancamento(l) {
     <label for="fValor">Valor (R$)</label>
     <input id="fValor" class="valor" inputmode="decimal" placeholder="0,00" autocomplete="off" value="${l ? numCampo(l.valor) : ''}">
     <div class="duas">
-      <div><label for="fData">Data</label><input id="fData" type="date" value="${l?.data || dataPadrao}"></div>
+      <div><label for="fData" id="fDataLbl">Data</label><input id="fData" type="date" value="${l?.dataCompra || l?.data || dataPadrao}"></div>
       <div><label for="fCat">Categoria</label><select id="fCat"></select></div>
     </div>
     <label for="fDesc">Descrição</label>
@@ -194,6 +195,7 @@ function formLancamento(l) {
       ${temPessoas() ? `<div><label for="fPessoa">Quem</label><select id="fPessoa">
         ${DB.config.pessoas.map(p => `<option ${p === pessoaPadrao ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>` : ''}
     </div>
+    <p class="dica" id="fFatura" hidden></p>
     ${editando ? '' : `<div id="fParcBox" hidden>
       <div class="duas">
         <div><label for="fParc">Parcelas</label><select id="fParc">
@@ -217,23 +219,39 @@ function formLancamento(l) {
       selCat.innerHTML = `<option value="">Sem categoria</option>` + categoriasDo(tipo)
         .map(c => `<option value="${c.id}" ${c.id === atual ? 'selected' : ''}>${esc(c.nome)}</option>`).join('');
     };
-    // Parcelamento: só para despesa nova no cartão de crédito
+    // Cartão de crédito: lança pelo mês da fatura; parcelamento só em despesa nova
     const selPag = corpo.querySelector('#fPag');
-    const qtdParcelas = () => editando || tipo !== 'despesa' || selPag.value !== 'Cartão de crédito'
-      ? 1 : Number(corpo.querySelector('#fParc').value);
+    const ehCartao = () => tipo === 'despesa' && selPag.value === 'Cartão de crédito';
+    const cfg = DB.config.cartao, temCfg = !!(cfg.fechamento && cfg.vencimento);
+    const pelaFatura = () => ehCartao() && temCfg;
+    // No cartão, o campo é a data da compra e o lançamento cai no vencimento da fatura.
+    // `i` = quantos meses depois da 1ª parcela.
+    const dataLanc = (compra, i) => pelaFatura()
+      ? addMesesData(vencimentoFatura(compra, cfg.fechamento, cfg.vencimento), i) : addMesesData(compra, i);
+    // Parcela sendo editada: a quantos meses ela está da 1ª (lançamentos antigos já guardam a data final).
+    const deslocamento = editando && l.parcelas && l.dataCompra ? l.parcela - 1 : 0;
+    const qtdParcelas = () => editando || !ehCartao() ? 1 : Number(corpo.querySelector('#fParc').value);
     const valoresParcelas = valor => corpo.querySelector('#fParcBase').value === 'parcela'
       ? Array(qtdParcelas()).fill(valor) : dividirParcelas(valor, qtdParcelas());
     const montarParcelas = () => {
+      const data = corpo.querySelector('#fData').value, dataOk = /^\d{4}-\d{2}-\d{2}$/.test(data);
+      corpo.querySelector('#fDataLbl').textContent = ehCartao() ? 'Data da compra' : 'Data';
+      const fat = corpo.querySelector('#fFatura');
+      fat.hidden = !ehCartao();
+      fat.innerHTML = !temCfg
+        ? 'Para lançar pelo mês da fatura, informe o fechamento e o vencimento do cartão em <a href="#/ajustes" style="color:var(--verde);font-weight:600">Ajustes</a>. Por enquanto entra na data da compra.'
+        : dataOk ? `Entra na fatura que vence em <b>${fmtData(dataLanc(data, deslocamento))}</b>.` : '';
+      fat.querySelector('a')?.addEventListener('click', fecharModal);
+
       const box = corpo.querySelector('#fParcBox');
       if (!box) return;
-      box.hidden = tipo !== 'despesa' || selPag.value !== 'Cartão de crédito';
+      box.hidden = !ehCartao();
       const n = qtdParcelas(), valor = r2(lerValor(corpo.querySelector('#fValor').value));
-      const data = corpo.querySelector('#fData').value;
       let info = '';
       if (n > 1 && valor > 0) {
         const vs = valoresParcelas(valor), total = vs.reduce((s, v) => s + v, 0);
         info = `${n}x de ${fmtBRL(vs.at(-1))} · total ${fmtBRL(total)}`;
-        if (/^\d{4}-\d{2}-\d{2}$/.test(data)) info += ` · de ${fmtMes(data.slice(0, 7))} a ${fmtMes(addMeses(data.slice(0, 7), n - 1))}`;
+        if (dataOk) info += ` · faturas de ${fmtMes(dataLanc(data, 0).slice(0, 7))} a ${fmtMes(dataLanc(data, n - 1).slice(0, 7))}`;
       }
       corpo.querySelector('#fParcInfo').textContent = info;
     };
@@ -249,7 +267,9 @@ function formLancamento(l) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) { toast('Informe a data'); return; }
       const pessoa = corpo.querySelector('#fPessoa')?.value ?? (DB.config.pessoas[0] || '');
       const dados = {
-        tipo, valor, data, pessoa,
+        tipo, valor, pessoa,
+        data: dataLanc(data, deslocamento),
+        dataCompra: pelaFatura() ? data : null,
         categoriaId: selCat.value || null,
         pagamento: selPag.value || null,
         descricao: corpo.querySelector('#fDesc').value.trim()
@@ -258,18 +278,19 @@ function formLancamento(l) {
       if (editando) {
         Object.assign(l, dados);
         if (corpo.querySelector('#fProximas')?.checked) {
-          const { data: _, ...comuns } = dados;
-          parcelas.filter(x => x.parcela > l.parcela).forEach(x => Object.assign(x, comuns));
+          parcelas.filter(x => x.parcela > l.parcela).forEach(x => Object.assign(x, dados,
+            { data: dataLanc(data, deslocamento + x.parcela - l.parcela) }));
         }
       } else if (n > 1) {
         const grupoParcela = uid(), criadoEm = new Date().toISOString();
         valoresParcelas(valor).forEach((v, i) => DB.lancamentos.push({ ...dados, id: uid(), criadoEm,
-          valor: v, data: addMesesData(data, i), grupoParcela, parcela: i + 1, parcelas: n }));
+          valor: v, data: dataLanc(data, i), grupoParcela, parcela: i + 1, parcelas: n }));
       } else DB.lancamentos.push({ id: uid(), criadoEm: new Date().toISOString(), ...dados });
       DB.config.ultimaPessoa = pessoa;
       salvar(); fecharModal();
-      if (!editando && data.slice(0, 7) !== mesSel) mesSel = data.slice(0, 7);
-      toast(editando ? 'Lançamento atualizado' : n > 1 ? `Compra lançada em ${n} parcelas ✓` : 'Lançamento salvo ✓');
+      if (!editando && dados.data.slice(0, 7) !== mesSel) mesSel = dados.data.slice(0, 7);
+      const naFatura = dados.dataCompra ? ` na fatura de ${fmtMes(dados.data.slice(0, 7))}` : '';
+      toast(editando ? 'Lançamento atualizado' : n > 1 ? `Compra lançada em ${n} parcelas${naFatura} ✓` : `Lançamento salvo${naFatura} ✓`);
       rota();
     };
     corpo.querySelector('#fExcluir')?.addEventListener('click', () => {
@@ -671,6 +692,13 @@ function telaAjustes() {
       <div class="chips-edit">${chips(categoriasDo(tipo), 'data-delcat')}</div>
       <div class="add-linha"><input id="aCat_${tipo}" placeholder="Nova categoria"><button class="btn" data-addcat="${tipo}">Adicionar</button></div>
     </div>`).join('')}
+    <div class="card"><h3>Cartão de crédito</h3>
+      <div class="duas">
+        <div><label for="aFech">Dia do fechamento</label><input id="aFech" inputmode="numeric" placeholder="Ex.: 5" value="${DB.config.cartao.fechamento || ''}"></div>
+        <div><label for="aVenc">Dia do vencimento</label><input id="aVenc" inputmode="numeric" placeholder="Ex.: 12" value="${DB.config.cartao.vencimento || ''}"></div>
+      </div>
+      <p class="dica">As compras no cartão entram no mês em que a fatura vence. Compras feitas a partir do dia do fechamento vão para a fatura seguinte.</p>
+    </div>
     <div class="card"><h3>Backup dos dados</h3>
       <p class="dica" style="margin-top:0">Os dados ficam salvos <b>só neste aparelho</b>, no navegador. Para não perder nada (ou passar para outro celular), exporte um backup e guarde no Drive, e-mail ou WhatsApp.
       ${DB.config.ultimoBackup ? `<br>Último backup: <b>${fmtData(DB.config.ultimoBackup)}</b>.` : ''}</p>
@@ -690,6 +718,13 @@ function telaAjustes() {
     </div>`;
 
   $('#aFamilia').onchange = e => { DB.config.familia = e.target.value.trim(); salvar(); toast('Nome salvo'); };
+  ['aFech', 'aVenc'].forEach(id => $('#' + id).onchange = e => {
+    const dia = Math.round(lerValor(e.target.value));
+    const valido = dia >= 1 && dia <= 31;
+    if (e.target.value.trim() && !valido) { toast('Informe um dia entre 1 e 31'); e.target.value = ''; }
+    DB.config.cartao[id === 'aFech' ? 'fechamento' : 'vencimento'] = valido ? dia : null;
+    salvar(); if (valido) toast('Cartão salvo');
+  });
 
   const addPessoa = () => {
     const nome = $('#aPessoa').value.trim();
