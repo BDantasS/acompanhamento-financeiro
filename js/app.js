@@ -73,7 +73,7 @@ function itemLancamento(l) {
   const sinal = l.tipo === 'receita' ? '+' : '−';
   return `<button class="lista-item" data-lanc="${l.id}">
     <div class="info">
-      <div class="t">${esc(l.descricao || cat || 'Sem categoria')}</div>
+      <div class="t">${esc(l.descricao || cat || 'Sem categoria')}${l.parcelas ? ` <span class="parcela">${l.parcela}/${l.parcelas}</span>` : ''}</div>
       <div class="s">${esc(detalhes.join(' · ') || fmtData(l.data))}</div>
     </div>
     <div class="v ${l.tipo === 'receita' ? 'pos' : ''}">${sinal} ${fmtBRL(l.valor)}</div>
@@ -171,6 +171,9 @@ function formLancamento(l) {
   // Novo lançamento no mês que está sendo visto: hoje, ou o dia 1 se for outro mês.
   const dataPadrao = mesSel === mesAtual() ? hoje() : mesSel + '-01';
   const pessoaPadrao = l?.pessoa ?? (DB.config.ultimaPessoa || DB.config.pessoas[0] || '');
+  // Outras parcelas da mesma compra (inclui esta)
+  const parcelas = l?.grupoParcela ? DB.lancamentos.filter(x => x.grupoParcela === l.grupoParcela)
+    .sort((a, b) => a.parcela - b.parcela) : [];
 
   abrirModal(editando ? 'Editar lançamento' : 'Novo lançamento', `
     <div class="segmento" id="fTipo">
@@ -191,8 +194,20 @@ function formLancamento(l) {
       ${temPessoas() ? `<div><label for="fPessoa">Quem</label><select id="fPessoa">
         ${DB.config.pessoas.map(p => `<option ${p === pessoaPadrao ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>` : ''}
     </div>
+    ${editando ? '' : `<div id="fParcBox" hidden>
+      <div class="duas">
+        <div><label for="fParc">Parcelas</label><select id="fParc">
+          ${Array.from({ length: 24 }, (_, i) => `<option value="${i + 1}">${i ? `${i + 1}x` : 'À vista'}</option>`).join('')}</select></div>
+        <div><label for="fParcBase">O valor é</label><select id="fParcBase">
+          <option value="total">Total da compra</option><option value="parcela">De cada parcela</option></select></div>
+      </div>
+      <p class="dica" id="fParcInfo"></p>
+    </div>`}
+    ${parcelas.length > 1 ? `<p class="dica">Parcela ${l.parcela} de ${l.parcelas} · total da compra ${fmtBRL(parcelas.reduce((s, x) => s + x.valor, 0))}</p>
+      <label class="check" style="margin-top:10px"><input type="checkbox" id="fProximas" checked>Aplicar mudanças às próximas parcelas</label>` : ''}
     <div class="botoes">
-      ${editando ? '<button class="btn perigo" id="fExcluir">Excluir</button>' : ''}
+      ${editando ? `<button class="btn perigo" id="fExcluir">${parcelas.length > 1 ? 'Excluir esta' : 'Excluir'}</button>` : ''}
+      ${parcelas.length > 1 ? '<button class="btn perigo" id="fExcluirTodas">Excluir todas</button>' : ''}
       <button class="btn" id="fSalvar">${editando ? 'Salvar' : 'Adicionar'}</button>
     </div>`, corpo => {
     const selCat = corpo.querySelector('#fCat');
@@ -202,8 +217,29 @@ function formLancamento(l) {
       selCat.innerHTML = `<option value="">Sem categoria</option>` + categoriasDo(tipo)
         .map(c => `<option value="${c.id}" ${c.id === atual ? 'selected' : ''}>${esc(c.nome)}</option>`).join('');
     };
-    montarTipo();
-    corpo.querySelectorAll('#fTipo button').forEach(b => b.onclick = () => { tipo = b.dataset.t; montarTipo(); });
+    // Parcelamento: só para despesa nova no cartão de crédito
+    const selPag = corpo.querySelector('#fPag');
+    const qtdParcelas = () => editando || tipo !== 'despesa' || selPag.value !== 'Cartão de crédito'
+      ? 1 : Number(corpo.querySelector('#fParc').value);
+    const valoresParcelas = valor => corpo.querySelector('#fParcBase').value === 'parcela'
+      ? Array(qtdParcelas()).fill(valor) : dividirParcelas(valor, qtdParcelas());
+    const montarParcelas = () => {
+      const box = corpo.querySelector('#fParcBox');
+      if (!box) return;
+      box.hidden = tipo !== 'despesa' || selPag.value !== 'Cartão de crédito';
+      const n = qtdParcelas(), valor = r2(lerValor(corpo.querySelector('#fValor').value));
+      const data = corpo.querySelector('#fData').value;
+      let info = '';
+      if (n > 1 && valor > 0) {
+        const vs = valoresParcelas(valor), total = vs.reduce((s, v) => s + v, 0);
+        info = `${n}x de ${fmtBRL(vs.at(-1))} · total ${fmtBRL(total)}`;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(data)) info += ` · de ${fmtMes(data.slice(0, 7))} a ${fmtMes(addMeses(data.slice(0, 7), n - 1))}`;
+      }
+      corpo.querySelector('#fParcInfo').textContent = info;
+    };
+    montarTipo(); montarParcelas();
+    corpo.querySelectorAll('#fTipo button').forEach(b => b.onclick = () => { tipo = b.dataset.t; montarTipo(); montarParcelas(); });
+    ['#fPag', '#fParc', '#fParcBase', '#fValor', '#fData'].forEach(s => corpo.querySelector(s)?.addEventListener('input', montarParcelas));
     if (!editando) setTimeout(() => corpo.querySelector('#fValor').focus(), 50);
 
     corpo.querySelector('#fSalvar').onclick = () => {
@@ -215,21 +251,36 @@ function formLancamento(l) {
       const dados = {
         tipo, valor, data, pessoa,
         categoriaId: selCat.value || null,
-        pagamento: corpo.querySelector('#fPag').value || null,
+        pagamento: selPag.value || null,
         descricao: corpo.querySelector('#fDesc').value.trim()
       };
-      if (editando) Object.assign(l, dados);
-      else DB.lancamentos.push({ id: uid(), criadoEm: new Date().toISOString(), ...dados });
+      const n = qtdParcelas();
+      if (editando) {
+        Object.assign(l, dados);
+        if (corpo.querySelector('#fProximas')?.checked) {
+          const { data: _, ...comuns } = dados;
+          parcelas.filter(x => x.parcela > l.parcela).forEach(x => Object.assign(x, comuns));
+        }
+      } else if (n > 1) {
+        const grupoParcela = uid(), criadoEm = new Date().toISOString();
+        valoresParcelas(valor).forEach((v, i) => DB.lancamentos.push({ ...dados, id: uid(), criadoEm,
+          valor: v, data: addMesesData(data, i), grupoParcela, parcela: i + 1, parcelas: n }));
+      } else DB.lancamentos.push({ id: uid(), criadoEm: new Date().toISOString(), ...dados });
       DB.config.ultimaPessoa = pessoa;
       salvar(); fecharModal();
       if (!editando && data.slice(0, 7) !== mesSel) mesSel = data.slice(0, 7);
-      toast(editando ? 'Lançamento atualizado' : 'Lançamento salvo ✓');
+      toast(editando ? 'Lançamento atualizado' : n > 1 ? `Compra lançada em ${n} parcelas ✓` : 'Lançamento salvo ✓');
       rota();
     };
     corpo.querySelector('#fExcluir')?.addEventListener('click', () => {
-      if (!confirm('Excluir este lançamento?')) return;
+      if (!confirm(parcelas.length > 1 ? `Excluir só a parcela ${l.parcela}/${l.parcelas}?` : 'Excluir este lançamento?')) return;
       DB.lancamentos = DB.lancamentos.filter(x => x.id !== l.id);
       salvar(); fecharModal(); toast('Lançamento excluído'); rota();
+    });
+    corpo.querySelector('#fExcluirTodas')?.addEventListener('click', () => {
+      if (!confirm(`Excluir todas as ${parcelas.length} parcelas desta compra?`)) return;
+      DB.lancamentos = DB.lancamentos.filter(x => x.grupoParcela !== l.grupoParcela);
+      salvar(); fecharModal(); toast('Parcelas excluídas'); rota();
     });
   });
 }

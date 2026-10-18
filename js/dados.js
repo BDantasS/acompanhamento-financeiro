@@ -27,6 +27,18 @@ function addMeses(mes, n) {
   const i = y * 12 + (m - 1) + n;
   return `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`;
 }
+/** "2026-01-31" + 1 -> "2026-02-28" (mantém o dia, limitado ao fim do mês) */
+function addMesesData(data, n) {
+  const mes = addMeses(data.slice(0, 7), n);
+  const [y, m] = mes.split('-').map(Number);
+  const ultimo = new Date(y, m, 0).getDate();
+  return `${mes}-${String(Math.min(Number(data.slice(8, 10)), ultimo)).padStart(2, '0')}`;
+}
+/** Divide um total em n parcelas em centavos; a diferença do arredondamento vai na 1ª. */
+function dividirParcelas(total, n) {
+  const centavos = Math.round(total * 100), base = Math.floor(centavos / n);
+  return Array.from({ length: n }, (_, i) => (base + (i === 0 ? centavos - base * n : 0)) / 100);
+}
 /** Número de meses de `de` até `ate` (ambos "YYYY-MM"). */
 function difMeses(de, ate) {
   const [fy, fm] = de.split('-').map(Number);
@@ -177,4 +189,4 @@ function serieReal(ids, movimentos, saldos, deMes, ateMes) {
   return out;
 }
 
-if (typeof module !== 'undefined') module.exports = { addMeses, difMeses, lerValor, projetar, taxaAnual, serieReal, resumoMes, normalizar };
+if (typeof module !== 'undefined') module.exports = { addMeses, addMesesData, dividirParcelas, difMeses, lerValor, projetar, taxaAnual, serieReal, resumoMes, normalizar };
