@@ -11,6 +11,8 @@
   --serie-1: #2a78d6;
   --serie-2: #eb6834;
   --grade: #eceef2;
+  --cat-1: #2a78d6; --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100; --cat-5: #e87ba4; --cat-outras: #b4bac5;
+  --st-alerta: #fab219; --st-critico: #d03b3b;
   --raio: 14px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   color-scheme: light;
@@ -29,6 +31,7 @@
     --serie-1: #3987e5;
     --serie-2: #d95926;
     --grade: #222831;
+    --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181; --cat-outras: #5b6372;
     color-scheme: dark;
   }
 }
@@ -222,3 +225,28 @@ td small { color: var(--suave); }
 .boas p { color: var(--suave); margin: 0 0 18px; line-height: 1.5; }
 .boas .card { text-align: left; }
 .parcela { display: inline-block; font-size: 11px; font-weight: 600; color: var(--suave); background: var(--fundo); border-radius: 6px; padding: 1px 6px; margin-left: 4px; vertical-align: 1px; }
+/* Orçamento por categoria (barra = gasto, traço = orçamento) */
+.barras .trilho { position: relative; }
+.barras .trilho div { border-radius: 0 4px 4px 0; background: var(--cat-1); max-width: 100%; }
+.barras .trilho div.alerta { background: var(--st-alerta); }
+.barras .trilho div.critico { background: var(--st-critico); }
+.barras .meta { position: absolute; top: -3px; width: 2px; height: 14px; margin-left: -1px; border-radius: 1px; background: var(--texto); }
+.barras .linha small { color: var(--suave); font-weight: 400; }
+.barras .status { font-size: 12px; color: var(--suave); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+.barras .status i { font-style: normal; font-weight: 700; }
+.barras .status.alerta i { color: var(--st-alerta); }
+.barras .status.critico i { color: var(--st-critico); }
+.barras .status.critico { color: var(--texto); }
+.orc-total { margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--borda); }
+/* Colunas empilhadas dos últimos meses */
+.grafico.colunas { height: 220px; }
+.legenda .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.grafico rect.alvo { fill: transparent; cursor: pointer; outline: none; }
+.grafico rect.alvo:focus-visible { fill: var(--grade); }
+.ver-tabela { margin-top: 10px; font-size: 13px; }
+.ver-tabela summary { color: var(--suave); cursor: pointer; font-weight: 600; }
+.ver-tabela .tabela-wrap { margin-top: 8px; }
+/* Orçamento em Ajustes */
+.orc-lista { display: flex; flex-direction: column; gap: 8px; }
+.orc-lista label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; font-weight: 500; font-size: 14px; color: var(--texto); }
+.orc-lista input { max-width: 130px; text-align: right; }

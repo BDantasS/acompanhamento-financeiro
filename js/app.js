@@ -6,6 +6,7 @@ const view = $('#view');
 let mesSel = mesAtual();
 let filtroTipo = 'todos', filtroPessoa = 'todas';
 let emDinheiroDeHoje = false;
+let rolarPara = ''; // id de um card para mostrar ao abrir a próxima tela
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
@@ -85,12 +86,173 @@ function ligarLancamentos(raiz) {
     formLancamento(DB.lancamentos.find(l => l.id === b.dataset.lanc)));
 }
 
+// ---------- Gastos por categoria e orçamento ----------
+/** Gasto por categoria no mês, incluindo categorias com orçamento ainda sem gasto. */
+function linhasOrcamento(lancs) {
+  const gasto = new Map();
+  for (const l of lancs) if (l.tipo === 'despesa') gasto.set(l.categoriaId, (gasto.get(l.categoriaId) || 0) + l.valor);
+  const ids = new Set([...gasto.keys(), ...categoriasDo('despesa').filter(c => c.orcamento > 0).map(c => c.id)]);
+  return [...ids].map(id => {
+    const cat = DB.categorias.find(c => c.id === id);
+    return { id, nome: cat?.nome || 'Sem categoria', gasto: r2(gasto.get(id) || 0), orc: cat?.orcamento || 0 };
+  }).sort((a, b) => b.gasto - a.gasto || b.orc - a.orc);
+}
+/** ok / alerta (a partir de 80%) / critico (passou do orçamento) */
+const situacao = (gasto, orc) => !orc ? '' : gasto > orc ? 'critico' : gasto >= orc * 0.8 ? 'alerta' : 'ok';
+function textoSituacao(gasto, orc) {
+  const s = situacao(gasto, orc);
+  if (!s) return '';
+  const pct = Math.round(gasto / orc * 100);
+  const txt = s === 'critico' ? `<i>▲</i>${fmtBRL(gasto - orc)} acima do orçamento (${pct}%)`
+    : s === 'alerta' && gasto >= orc ? `<i>!</i>Orçamento todo usado (100%)`
+    : s === 'alerta' ? `<i>!</i>Quase no limite: restam ${fmtBRL(orc - gasto)} (${pct}%)`
+    : `Restam ${fmtBRL(orc - gasto)} (${pct}% usado)`;
+  return `<div class="status ${s}">${txt}</div>`;
+}
+function cardCategorias(lancs) {
+  const linhas = linhasOrcamento(lancs);
+  const escala = Math.max(1, ...linhas.map(c => Math.max(c.gasto, c.orc)));
+  const comOrc = linhas.filter(c => c.orc > 0);
+  const totOrc = r2(comOrc.reduce((s, c) => s + c.orc, 0)), totGasto = r2(comOrc.reduce((s, c) => s + c.gasto, 0));
+  const barra = (gasto, orc, max) => `<div class="trilho"><div class="${situacao(gasto, orc)}" style="width:${(gasto / max * 100).toFixed(1)}%"></div>
+    ${orc ? `<i class="meta" style="left:${(orc / max * 100).toFixed(1)}%" title="Orçamento ${fmtBRL(orc)}"></i>` : ''}</div>`;
+  return `<div class="card"><h3>Gastos por categoria <a href="#/ajustes" data-ir="orcamento">${comOrc.length ? 'Orçamento' : 'Definir orçamento'}</a></h3>
+    ${totOrc ? `<ul class="barras orc-total"><li>
+      <div class="linha"><span><b>Total orçado</b></span><span class="num"><b>${fmtBRL(totGasto)}</b> <small>de ${fmtBRL(totOrc)}</small></span></div>
+      ${barra(totGasto, totOrc, Math.max(totGasto, totOrc))}${textoSituacao(totGasto, totOrc)}</li></ul>` : ''}
+    ${linhas.length ? `<ul class="barras">${linhas.map(c => `
+      <li><div class="linha"><span>${esc(c.nome)}</span><span class="num"><b>${fmtBRL(c.gasto)}</b>${c.orc ? ` <small>de ${fmtBRL(c.orc)}</small>` : ''}</span></div>
+      ${barra(c.gasto, c.orc, escala)}${textoSituacao(c.gasto, c.orc)}</li>`).join('')}</ul>
+      ${comOrc.length ? '<p class="dica">A barra é o gasto do mês; o traço marca o orçamento.</p>' : ''}`
+      : '<div class="vazio">Sem despesas neste mês.</div>'}
+  </div>`;
+}
+
+// ---------- Gráfico: gastos dos últimos 6 meses por categoria ----------
+const N_CORES = 5;
+/** As 5 categorias com mais gasto no histórico ganham cor fixa; o resto vira "Outras".
+ *  A cor segue a categoria e não muda ao trocar de mês. */
+function coresCategorias() {
+  const tot = new Map();
+  for (const l of DB.lancamentos) if (l.tipo === 'despesa' && l.categoriaId)
+    tot.set(l.categoriaId, (tot.get(l.categoriaId) || 0) + l.valor);
+  const top = [...tot].sort((a, b) => b[1] - a[1]).slice(0, N_CORES).map(([id]) => id)
+    .filter(id => DB.categorias.some(c => c.id === id));
+  return new Map(top.map((id, i) => [id, i + 1]));
+}
+/** Janela de 6 meses: fica parada nos meses recentes e só acompanha quando se navega para longe. */
+function fimJanela() {
+  const d = difMeses(mesSel, mesAtual());
+  return d > 0 && d < 6 ? mesAtual() : mesSel;
+}
+function serieGastos(ateMes = fimJanela(), n = 6) {
+  const cores = coresCategorias();
+  const grupos = [...cores].map(([id, slot]) => ({ chave: id, nome: nomeCategoria(id), cor: `var(--cat-${slot})` }));
+  grupos.push({ chave: 'outras', nome: grupos.length ? 'Outras' : 'Despesas', cor: 'var(--cat-outras)' });
+  const meses = Array.from({ length: n }, (_, i) => addMeses(ateMes, i - n + 1)).map(mes => {
+    const v = Object.fromEntries(grupos.map(g => [g.chave, 0]));
+    for (const l of DB.lancamentos) if (l.tipo === 'despesa' && l.data.slice(0, 7) === mes)
+      v[cores.has(l.categoriaId) ? l.categoriaId : 'outras'] += l.valor;
+    const total = r2(Object.values(v).reduce((s, x) => s + x, 0));
+    return { mes, v, total };
+  });
+  // Só mostra as categorias que aparecem na janela
+  const usados = grupos.filter(g => meses.some(m => m.v[g.chave] > 0));
+  return { grupos: usados, meses };
+}
+function cardEvolucao() {
+  const { grupos, meses } = serieGastos();
+  if (!meses.some(m => m.total > 0)) return '';
+  return `<div class="card"><h3>Gastos nos últimos 6 meses</h3>
+    ${grupos.length > 1 || totalOrcado() ? `<div class="legenda">${grupos.map(g => `<span><i class="sw" style="background:${g.cor}"></i>${esc(g.nome)}</span>`).join('')}
+      ${totalOrcado() ? '<span><svg width="16" height="4"><line x1="0" y1="2" x2="16" y2="2" stroke="var(--texto)" stroke-width="1.5" stroke-dasharray="4 3"/></svg>Orçamento total</span>' : ''}</div>` : ''}
+    <div class="grafico colunas" id="gCols"></div>
+    <p class="dica">Toque numa coluna para ver o mês.</p>
+    <details class="ver-tabela"><summary>Ver em tabela</summary><div class="tabela-wrap"><table>
+      <thead><tr><th>Mês</th>${grupos.map(g => `<th>${esc(g.nome)}</th>`).join('')}<th>Total</th></tr></thead>
+      <tbody>${meses.map(m => `<tr><td>${fmtMes(m.mes)}</td>${grupos.map(g => `<td>${fmtBRL(m.v[g.chave])}</td>`).join('')}<td><b>${fmtBRL(m.total)}</b></td></tr>`).join('')}</tbody>
+    </table></div></details>
+  </div>`;
+}
+const totalOrcado = () => r2(categoriasDo('despesa').reduce((s, c) => s + (c.orcamento || 0), 0));
+
+/** Retângulo com os cantos de cima arredondados (ponta do dado), base reta. */
+function colunaTopo(x, y, w, h, r) {
+  r = Math.min(r, h, w / 2);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+function desenharColunas(box) {
+  const { grupos, meses } = serieGastos();
+  const orc = totalOrcado();
+  const W = box.clientWidth || 320, H = box.clientHeight || 220;
+  const pl = 52, pr = 8, pt = 18, pb = 24;
+  const maxV = Math.max(1, orc, ...meses.map(m => m.total));
+  const passo = passoBonito(maxV / 4), topoY = Math.ceil(maxV / passo) * passo;
+  const banda = (W - pl - pr) / meses.length, larg = Math.min(24, banda * 0.55);
+  const y = v => pt + (1 - v / topoY) * (H - pt - pb);
+  const GAP = 2;
+
+  let grade = '';
+  for (let v = 0; v <= topoY + 1e-6; v += passo)
+    grade += `<line x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grade)"/>
+      <text x="${pl - 8}" y="${y(v) + 4}" text-anchor="end">${fmtBRLCurto(v)}</text>`;
+
+  let colunas = '', alvos = '';
+  meses.forEach((m, i) => {
+    const cx = pl + banda * (i + 0.5), x0 = cx - larg / 2;
+    const segs = grupos.map(g => ({ g, v: m.v[g.chave] })).filter(s => s.v > 0);
+    let base = y(0);
+    segs.forEach((s, k) => {
+      const h = y(0) - y(s.v);
+      const topo = k === segs.length - 1;
+      // 2px de fundo separando os segmentos (some se o segmento for muito fino)
+      const hh = Math.max(0.5, h - (k > 0 ? GAP : 0));
+      const yy = base - h;
+      colunas += topo ? `<path d="${colunaTopo(x0, yy, larg, hh, 4)}" fill="${s.g.cor}"/>`
+        : `<rect x="${x0}" y="${yy}" width="${larg}" height="${hh}" fill="${s.g.cor}"/>`;
+      base = yy;
+    });
+    const atual = m.mes === mesSel;
+    if (atual && m.total > 0) colunas += `<text x="${cx}" y="${y(m.total) - 5}" text-anchor="middle" style="fill:var(--texto);font-weight:600">${fmtBRLCurto(m.total)}</text>`;
+    colunas += `<text x="${cx}" y="${H - 6}" text-anchor="middle" style="${atual ? 'fill:var(--texto);font-weight:700' : ''}">${MESES[Number(m.mes.slice(5)) - 1]}</text>`;
+    alvos += `<rect class="alvo" data-i="${i}" x="${pl + banda * i}" y="${pt}" width="${banda}" height="${H - pt}" tabindex="0"
+      aria-label="${fmtMesLongo(m.mes)}: ${fmtBRL(m.total)}"/>`;
+  });
+  const linhaOrc = orc ? `<line x1="${pl}" x2="${W - pr}" y1="${y(orc)}" y2="${y(orc)}" stroke="var(--texto)" stroke-width="1.5" stroke-dasharray="4 3" opacity=".7"/>` : '';
+
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Gastos por categoria nos últimos 6 meses">
+    ${grade}<line x1="${pl}" x2="${W - pr}" y1="${y(0)}" y2="${y(0)}" stroke="var(--borda)"/>
+    ${alvos}<g pointer-events="none">${colunas}${linhaOrc}</g></svg><div class="tip" id="cTip" hidden></div>`;
+
+  const svg = box.querySelector('svg'), tip = box.querySelector('#cTip');
+  const mostrar = i => {
+    const m = meses[i];
+    tip.innerHTML = `<b>${fmtMesLongo(m.mes)}</b>
+      ${[...grupos].reverse().filter(g => m.v[g.chave] > 0).map(g =>
+        `<div><span><i style="background:${g.cor};border-radius:3px"></i>${esc(g.nome)}</span><span class="num">${fmtBRL(m.v[g.chave])}</span></div>`).join('')}
+      <div style="border-top:1px solid var(--borda);margin-top:4px;padding-top:4px"><span>Total</span><span class="num"><b style="margin:0">${fmtBRL(m.total)}</b></span></div>
+      ${orc ? `<div><span>Orçamento</span><span class="num">${fmtBRL(orc)}</span></div>` : ''}`;
+    tip.hidden = false;
+    const ret = svg.getBoundingClientRect(), px = (pl + banda * (i + 0.5)) * (ret.width / W);
+    tip.style.left = (px > ret.width / 2 ? Math.max(0, px - tip.offsetWidth - 14) : px + 14) + 'px';
+  };
+  box.querySelectorAll('.alvo').forEach(a => {
+    const i = Number(a.dataset.i);
+    a.addEventListener('pointerenter', () => mostrar(i));
+    a.addEventListener('focus', () => mostrar(i));
+    a.addEventListener('blur', () => tip.hidden = true);
+    const ir = () => { if (meses[i].mes !== mesSel) { mesSel = meses[i].mes; rota(); } };
+    a.addEventListener('click', ir);
+    a.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ir(); } });
+  });
+  svg.addEventListener('pointerleave', () => tip.hidden = true);
+}
+
 // ---------- Painel ----------
 function telaPainel() {
   topo('Painel', seletorMes());
   const lancs = lancamentosDoMes(mesSel);
   const r = resumoMes(lancs, nomeCategoria);
-  const maior = r.porCategoria[0]?.total || 0;
   const patrimonio = patrimonioAtual();
   const precisaBackup = DB.lancamentos.length >= 10 &&
     (!DB.config.ultimoBackup || difMeses(DB.config.ultimoBackup.slice(0, 7), mesAtual()) >= 1);
@@ -106,12 +268,8 @@ function telaPainel() {
     ${precisaBackup ? `<div class="card"><h3>Lembrete de backup</h3>
       <p class="dica" style="margin:0">Seus dados ficam só neste aparelho. Faça uma cópia de segurança de vez em quando.</p>
       <div class="botoes"><a class="btn secundario" href="#/ajustes">Fazer backup</a></div></div>` : ''}
-    <div class="card"><h3>Gastos por categoria</h3>
-      ${r.porCategoria.length ? `<ul class="barras">${r.porCategoria.map(c => `
-        <li><div class="linha"><span>${esc(c.nome)}</span><span class="num"><b>${fmtBRL(c.total)}</b></span></div>
-        <div class="trilho"><div style="width:${(c.total / maior * 100).toFixed(1)}%"></div></div></li>`).join('')}</ul>`
-        : '<div class="vazio">Sem despesas neste mês.</div>'}
-    </div>
+    ${cardCategorias(lancs)}
+    ${cardEvolucao()}
     <div class="card"><h3>Últimos lançamentos ${lancs.length > 6 ? '<a href="#/lancamentos">Ver todos</a>' : ''}</h3>
       ${lancs.length ? `<div class="lista">${lancs.slice(0, 6).map(itemLancamento).join('')}</div>`
         : '<div class="vazio"><b>📝</b>Nenhum lançamento neste mês.<br>Toque no <strong>+</strong> para lançar.</div>'}
@@ -120,6 +278,9 @@ function telaPainel() {
       <div class="info"><div class="s">Patrimônio investido</div><div class="t num">${fmtBRL(patrimonio.total)}</div></div>
       <div class="v">&#8250;</div></a>` : ''}`;
   ligarLancamentos(view);
+  const cols = $('#gCols');
+  if (cols) desenharColunas(cols);
+  view.querySelector('[data-ir]')?.addEventListener('click', () => rolarPara = 'aOrcamento');
   fab(() => formLancamento());
 }
 
@@ -669,7 +830,10 @@ function desenharGrafico(box, linhas) {
 let _redim;
 window.addEventListener('resize', () => {
   clearTimeout(_redim);
-  _redim = setTimeout(() => { if (telaAtual === 'projecao' && $('#pGrafico')) resultadoProjecao(); }, 150);
+  _redim = setTimeout(() => {
+    if (telaAtual === 'projecao' && $('#pGrafico')) resultadoProjecao();
+    if ($('#gCols')) desenharColunas($('#gCols'));
+  }, 150);
 });
 
 // ---------- Ajustes ----------
@@ -686,6 +850,12 @@ function telaAjustes() {
       <div class="chips-edit">${chips(DB.config.pessoas, 'data-delpessoa')}</div>
       <div class="add-linha"><input id="aPessoa" placeholder="Adicionar pessoa"><button class="btn" id="aAddPessoa">Adicionar</button></div>
       <p class="dica">Com duas ou mais pessoas, cada lançamento registra quem gastou.</p>
+    </div>
+    <div class="card" id="aOrcamento" style="scroll-margin-top:70px"><h3>Orçamento mensal por categoria</h3>
+      <p class="dica" style="margin:0 0 12px">Quanto vocês querem gastar no máximo, por mês, em cada categoria. Deixe em branco para não ter limite.</p>
+      <div class="orc-lista">${categoriasDo('despesa').map(c => `
+        <label>${esc(c.nome)}<input data-orc="${c.id}" inputmode="decimal" placeholder="Sem limite" value="${c.orcamento ? numCampo(c.orcamento) : ''}"></label>`).join('')}</div>
+      <p class="dica" id="aOrcTotal"></p>
     </div>
     ${['despesa', 'receita'].map(tipo => `
     <div class="card"><h3>Categorias de ${tipo === 'despesa' ? 'despesa' : 'receita'}</h3>
@@ -718,6 +888,20 @@ function telaAjustes() {
     </div>`;
 
   $('#aFamilia').onchange = e => { DB.config.familia = e.target.value.trim(); salvar(); toast('Nome salvo'); };
+  const mostrarTotalOrc = () => {
+    const t = totalOrcado();
+    $('#aOrcTotal').textContent = t ? `Total orçado: ${fmtBRL(t)} por mês.` : '';
+  };
+  mostrarTotalOrc();
+  view.querySelectorAll('[data-orc]').forEach(i => i.onchange = () => {
+    const cat = DB.categorias.find(c => c.id === i.dataset.orc);
+    const v = r2(lerValor(i.value));
+    if (i.value.trim() && !(v >= 0)) { toast('Valor inválido'); i.value = cat.orcamento ? numCampo(cat.orcamento) : ''; return; }
+    cat.orcamento = v > 0 ? v : null;
+    i.value = cat.orcamento ? numCampo(cat.orcamento) : '';
+    salvar(); mostrarTotalOrc(); toast(cat.orcamento ? `Orçamento de ${cat.nome} salvo` : `${cat.nome} sem limite`);
+  });
+  if (rolarPara) { $('#' + rolarPara)?.scrollIntoView({ block: 'start' }); rolarPara = ''; }
   ['aFech', 'aVenc'].forEach(id => $('#' + id).onchange = e => {
     const dia = Math.round(lerValor(e.target.value));
     const valido = dia >= 1 && dia <= 31;
